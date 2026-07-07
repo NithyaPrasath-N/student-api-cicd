@@ -10,7 +10,7 @@ students = [
 
 @app.route("/")
 def home():
-    return "testing to Student Management API 🚀"
+    return "Hello Version 3"
 
 
 @app.route("/students", methods=["GET"])
