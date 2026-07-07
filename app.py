@@ -10,7 +10,7 @@ students = [
 
 @app.route("/")
 def home():
-    return "Hello Version 3"
+    return "Webhook Working 🚀"
 
 
 @app.route("/students", methods=["GET"])
