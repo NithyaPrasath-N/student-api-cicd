@@ -1,0 +1,176 @@
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_NAME = "imnithii/student-api"
+        APP_REPO = "https://github.com/NithyaPrasath-N/student-api-cicd.git"
+        GITOPS_REPO = "https://github.com/NithyaPrasath-N/student-api-gitops.git"
+    }
+
+    stages {
+
+        stage('Checkout Application Code') {
+            steps {
+                git branch: 'main',
+                    url: "${APP_REPO}"
+            }
+        }
+
+        stage('Verify Environment') {
+            steps {
+                sh '''
+                    python3 --version
+                    pip3 --version
+                    git --version
+                    docker --version
+                '''
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                sh '''
+                    python3 -m pip install --break-system-packages -r requirements.txt
+                '''
+            }
+        }
+
+        stage('Run Tests') {
+            steps {
+                sh '''
+                    python3 -m pytest -v --junitxml=test-report.xml
+                '''
+            }
+        }
+
+        stage('Publish Test Report') {
+            steps {
+                junit 'test-report.xml'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                script {
+                    def scannerHome = tool 'SonarScanner'
+
+                    withSonarQubeEnv('SonarQube') {
+                        sh """
+                            ${scannerHome}/bin/sonar-scanner
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh """
+                    docker build -t ${IMAGE_NAME}:${BUILD_NUMBER} .
+                    docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${IMAGE_NAME}:latest
+                """
+            }
+        }
+
+        stage('Docker Login') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: '1ce8d1a6-eec3-4ce9-8f90-f4fe6d0cc732',
+                        usernameVariable: 'DOCKER_USERNAME',
+                        passwordVariable: 'DOCKER_PASSWORD'
+                    )
+                ]) {
+
+                    sh '''
+                        echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+                    '''
+                }
+            }
+        }
+
+        stage('Push Docker Images') {
+            steps {
+                sh """
+                    docker push ${IMAGE_NAME}:${BUILD_NUMBER}
+                    docker push ${IMAGE_NAME}:latest
+                """
+            }
+        }
+
+        stage('Clone GitOps Repository') {
+            steps {
+                dir('gitops') {
+
+                    deleteDir()
+
+                    git(
+                        branch: 'main',
+                        credentialsId: 'github-pat',
+                        url: "${GITOPS_REPO}"
+                    )
+                }
+            }
+        }
+
+        stage('Update Kubernetes Manifest') {
+            steps {
+
+                sh """
+                    sed -i 's|image: .*|image: ${IMAGE_NAME}:${BUILD_NUMBER}|g' gitops/k8s/deployment.yaml
+
+                    echo "========= Updated deployment.yaml ========="
+
+                    cat gitops/k8s/deployment.yaml
+                """
+            }
+        }
+
+        stage('Commit and Push GitOps Changes') {
+            steps {
+
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'github-pat',
+                        usernameVariable: 'GIT_USERNAME',
+                        passwordVariable: 'GIT_TOKEN'
+                    )
+                ]) {
+
+                    dir('gitops') {
+
+                        sh '''
+                            git config user.name "Jenkins"
+                            git config user.email "jenkins@student-api.com"
+
+                            git add k8s/deployment.yaml
+
+                            if ! git diff --cached --quiet; then
+                                git commit -m "Deploy Build ${BUILD_NUMBER}"
+                                git push https://${GIT_USERNAME}:${GIT_TOKEN}@github.com/NithyaPrasath-N/student-api-gitops.git HEAD:main
+                            else
+                                echo "No changes to commit."
+                            fi
+                        '''
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+
+        always {
+            sh 'docker logout || true'
+            echo 'Pipeline Finished.'
+        }
+
+        success {
+            echo '🎉 GitOps CI/CD Pipeline Completed Successfully!'
+        }
+
+        failure {
+            echo '❌ Pipeline Failed!'
+        }
+    }
+}
